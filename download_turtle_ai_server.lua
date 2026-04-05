@@ -2,7 +2,7 @@
 
 -- ========== CONFIGURATION PARAMETERS ==========
 -- Replace with your repository details
-local owner = "gotoundo"
+local owner = "Pazko77"
 local repo = "TurtleAI"
 local branch = "main" -- or "master" or another branch name
 
