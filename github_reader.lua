@@ -1,6 +1,6 @@
 -- GitHub repository content fetcher using ComputerCraft http API
 -- Replace with your details
-local owner = "gotoundo"
+local owner = "Pazko77"
 local repo = "TurtleAI"
 local path = "" -- Empty string for root directory, or specific path like "src"
 local branch = "main" -- or "master" or another branch name
