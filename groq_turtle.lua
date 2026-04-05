@@ -1,14 +1,12 @@
--- Turtle Gemini Shell
--- A program that uses Gemini AI to interpret natural language commands into turtle actions
--- Based on the original gemini_chat.lua implementation
+-- Turtle Groq Shell
+-- Adapted from gotoundo/TurtleAI (originally gemini_turtle.lua) to use Groq API
+-- A program that uses Groq AI to interpret natural language commands into turtle actions
 
-local MODEL = "models/gemini-2.0-flash"
+local MODEL = "llama-3.3-70b-versatile"
 local VERSION = "1.0.4"
 
--- Debug mode (set to true for more logging)
 local DEBUG = true
 
--- Helper function for debug logging
 local function debugLog(message)
   if DEBUG then
     term.setTextColor(colors.orange)
@@ -17,7 +15,6 @@ local function debugLog(message)
   end
 end
 
--- Helper function to escape special characters in JSON strings
 local function jsonEscape(str)
   if str then
     str = string.gsub(str, '\\', '\\\\')
@@ -29,7 +26,6 @@ local function jsonEscape(str)
   return str
 end
 
--- Helper function to unescape JSON strings
 local function jsonUnescape(str)
   if str then
     str = string.gsub(str, '\\n', '\n')
@@ -41,110 +37,87 @@ local function jsonUnescape(str)
   return str
 end
 
--- Function to parse JSON (CC doesn't have built-in JSON parsing)
+-- Parse OpenAI-compatible JSON response
 local function parseJSON(json)
-  -- Basic JSON parser (handles the response format we need)
   local result = {}
-  
-  -- Look for patterns in the JSON response
-  local content = json:match('"text"%s*:%s*"(.-[^\\])"')
-  
+
+  local content = json:match('"content"%s*:%s*"(.-[^\\])"')
+
   if content then
-    -- Unescape the JSON string
     result.text = jsonUnescape(content)
   else
-    -- Try a simpler pattern as fallback
-    content = json:match('"text"%s*:%s*"(.-)"')
+    content = json:match('"content"%s*:%s*"(.-)"')
     if content then
       result.text = jsonUnescape(content)
     end
   end
-  
+
   return result
 end
 
--- Helper function to trim whitespace from a string (since there's no built-in trim method)
 local function trim(s)
-  if type(s) ~= "string" then
-    return ""
-  end
+  if type(s) ~= "string" then return "" end
   return s:match("^%s*(.-)%s*$")
 end
 
--- Setup settings for the API key (reuse from simple_mining setting if available)
-settings.define("gemini.api_key", {
-  description = "Your Gemini API key from Google AI Studio",
+settings.define("groq.api_key", {
+  description = "Your Groq API key from console.groq.com",
   default = "",
   type = "string"
 })
 
--- Conversation history management
 local conversationHistory = {}
 
--- Add a message to history
 local function addToHistory(role, message)
   table.insert(conversationHistory, {role = role, text = message})
 end
 
--- Build the conversation context for the API request
 local function buildRequestBody()
-  local contents = {}
-  
+  local messages = {}
+
   for _, message in ipairs(conversationHistory) do
-    local roleStr = message.role == "user" and "user" or "model"
-    table.insert(contents, '{"role":"' .. roleStr .. '","parts":[{"text":"' .. jsonEscape(message.text) .. '"}]}')
+    -- Gemini used "model", OpenAI/Groq uses "assistant"
+    local role = message.role == "model" and "assistant" or message.role
+    table.insert(messages, '{"role":"' .. role .. '","content":"' .. jsonEscape(message.text) .. '"}')
   end
-  
-  local requestBody = '{"contents":[' .. table.concat(contents, ",") .. ']}'
+
+  local requestBody = '{"model":"' .. MODEL .. '","messages":[' .. table.concat(messages, ",") .. '],"max_tokens":1024}'
   return requestBody
 end
 
--- Function to send a request to Gemini API
 local function generateContent(prompt)
-  local apiKey = settings.get("gemini.api_key")
-  
+  local apiKey = settings.get("groq.api_key")
+
   if not apiKey or apiKey == "" then
-    -- Try to get it from simple_mining settings if available
-    apiKey = settings.get("3dminer.gemini.api_key") or settings.get("gemini.api_key")
-    
-    if not apiKey or apiKey == "" then
-      return "Error: API key not set. Use 'setkey' to set it."
-    else
-      settings.set("gemini.api_key", apiKey)
-      settings.save()
-    end
+    return "Error: API key not set. Use 'setkey' to set it."
   end
-  
-  -- Add the current prompt to history
+
   addToHistory("user", prompt)
-  
-  local url = "https://generativelanguage.googleapis.com/v1beta/" .. MODEL .. ":generateContent?key=" .. apiKey
-  
-  -- Prepare the request body with conversation history
+
+  local url = "https://api.groq.com/openai/v1/chat/completions"
   local requestBody = buildRequestBody()
-  
-  debugLog("Sending request to Gemini API")
-  
-  -- Make the HTTP request
+
+  debugLog("Sending request to Groq API")
+
   local response = http.post(
     url,
     requestBody,
-    {["Content-Type"] = "application/json"}
+    {
+      ["Content-Type"] = "application/json",
+      ["Authorization"] = "Bearer " .. apiKey
+    }
   )
-  
+
   if response then
     local responseText = response.readAll()
     response.close()
-    
-    -- Parse the JSON response
+
     local result = parseJSON(responseText)
-    
+
     if result.text then
-      -- Add the response to history
       addToHistory("model", result.text)
       return result.text
     else
-      -- Debug information for failed parsing
       local debugInfo = "Error: Could not parse response."
       if #responseText > 200 then
         debugInfo = debugInfo .. " Raw (first 200 chars): " .. responseText:sub(1, 200) .. "..."
@@ -154,17 +127,15 @@ local function generateContent(prompt)
       return debugInfo
     end
   else
-    return "Error: Could not connect to Gemini API"
+    return "Error: Could not connect to Groq API"
   end
 end
 
--- Clear conversation history
 local function clearHistory()
   conversationHistory = {}
   return "Conversation history cleared. Starting fresh!"
 end
 
--- Turtle execution context
 local turtleExecutionContext = {
   lastCommand = "",
   isInterpreting = false,
@@ -175,28 +146,23 @@ local turtleExecutionContext = {
   inProgress = false
 }
 
--- Check if simple_mining.lua exists on the turtle
 local function checkSimpleMiningExists()
   return fs.exists("simple_mining.lua")
 end
 
--- Run the simple_mining program with given dimensions
 local function runSimpleMining(width, height, depth)
   if not checkSimpleMiningExists() then
     return false, "simple_mining.lua not found on this turtle"
   end
-  
-  -- Use shell.run to execute the program with arguments
-  return pcall(function() 
+  return pcall(function()
     shell.run("simple_mining", tostring(width), tostring(height), tostring(depth))
   end)
 end
 
--- Initialize the AI with turtle-specific context
 local function initializeAI()
   local hasMiningProgram = checkSimpleMiningExists()
   local miningInfo = ""
-  
+
   if hasMiningProgram then
     miningInfo = [[
 This turtle has the "simple_mining.lua" program installed. You can use it to mine rectangular areas with these commands:
@@ -242,7 +208,7 @@ When interpreting commands, please:
 For mining commands like "mine a 5x5x5 area", check if they match the pattern for the simple_mining program. If they do, generate code that calls the function runSimpleMining(width, height, depth) instead of creating a custom mining algorithm.
 
 Example command: "Move forward 5 blocks then turn right"
-Example response: 
+Example response:
 ```lua
 for i = 1, 5 do
   if not turtle.forward() then
@@ -253,30 +219,18 @@ end
 turtle.turnRight()
 ```
 This will move the turtle forward 5 blocks, stopping if it encounters an obstacle, then turn right.
-
-Example command: "Mine a 3x4x5 area"
-Example response (if simple_mining.lua exists):
-```lua
-local success, err = runSimpleMining(3, 4, 5)
-if not success then
-  print("Error running mining program: " .. tostring(err))
-end
-```
-This will use the simple_mining program to excavate a 3x4x5 area using its efficient algorithm.
 ]]
 
   addToHistory("user", systemPrompt)
-  
+
   local initialResponse = "I'm TurtleGPT, your turtle control assistant. I'll help you control your ComputerCraft turtle using natural language commands. What would you like your turtle to do?"
   addToHistory("model", initialResponse)
-  
+
   return initialResponse
 end
 
--- Function to safely execute Lua code from string (with limitations)
 local function safeExecute(codeString)
   local success, result = pcall(function()
-    -- Create a safe environment with limited functions
     local env = {
       turtle = turtle,
       print = print,
@@ -301,76 +255,64 @@ local function safeExecute(codeString)
       },
       runSimpleMining = runSimpleMining,
       checkSimpleMiningExists = checkSimpleMiningExists,
-      shell = {
-        run = shell.run
-      }
+      shell = {run = shell.run}
     }
-    
-    -- Set metatable to allow read-only access to _G
+
     setmetatable(env, {
       __index = function(_, key)
-        -- Don't allow access to potentially unsafe functions
-        if _G[key] ~= nil and 
-           key ~= "load" and 
-           key ~= "loadstring" and 
-           key ~= "dofile" and 
+        if _G[key] ~= nil and
+           key ~= "load" and
+           key ~= "loadstring" and
+           key ~= "dofile" and
            key ~= "loadfile" then
           return _G[key]
         end
         return nil
       end
     })
-    
-    -- Compile the function with our safe environment
+
     local func, err = load(codeString, "turtleCommand", "t", env)
     if not func then
       return false, "Compilation error: " .. (err or "unknown error")
     end
-    
-    -- Execute the function
+
     return func()
   end)
-  
+
   if not success then
     return false, "Execution error: " .. tostring(result)
   end
-  
+
   return true, result
 end
 
--- Process and execute a queue of code commands
 local function processCommandQueue()
   if #turtleExecutionContext.commandQueue == 0 then
     turtleExecutionContext.inProgress = false
     return
   end
-  
+
   turtleExecutionContext.inProgress = true
-  
-  -- Execute the first command in the queue
+
   local cmd = table.remove(turtleExecutionContext.commandQueue, 1)
-  
-  -- Execute the command
+
   term.setTextColor(colors.lightBlue)
   print("Executing command...")
   term.setTextColor(colors.white)
-  
+
   local success, result = safeExecute(cmd)
-  
+
   if not success then
     term.setTextColor(colors.red)
     print("Error: " .. tostring(result))
     term.setTextColor(colors.white)
-    
-    -- Clear the queue on error
     turtleExecutionContext.commandQueue = {}
     turtleExecutionContext.inProgress = false
     return
   end
-  
-  -- Schedule the next command with a slight delay
+
   if #turtleExecutionContext.commandQueue > 0 then
-    os.sleep(0.5) -- Wait half a second between commands
+    os.sleep(0.5)
     processCommandQueue()
   else
     turtleExecutionContext.inProgress = false
@@ -378,26 +320,22 @@ local function processCommandQueue()
   end
 end
 
--- Extract code blocks from Gemini response
 local function extractCodeBlocks(response)
   debugLog("Extracting code blocks from response")
-  
-  -- Return empty table if response is not a string
+
   if type(response) ~= "string" then
     debugLog("Error: Response is not a string")
     return {}
   end
-  
+
   local codeBlocks = {}
-  
-  -- Look for code blocks in markdown format (```lua ... ```)
+
   for codeBlock in response:gmatch("```lua(.-)```") do
     debugLog("Found lua code block: " .. codeBlock:sub(1, 30) .. (codeBlock:len() > 30 and "..." or ""))
     local cleanedBlock = codeBlock:gsub("^%s+", ""):gsub("%s+$", "")
     table.insert(codeBlocks, cleanedBlock)
   end
-  
-  -- If no code blocks found with lua tag, try generic code blocks
+
   if #codeBlocks == 0 then
     debugLog("No lua code blocks found, looking for generic code blocks")
     for codeBlock in response:gmatch("```(.-)```") do
@@ -406,33 +344,29 @@ local function extractCodeBlocks(response)
       table.insert(codeBlocks, cleanedBlock)
     end
   end
-  
+
   debugLog("Extracted " .. tostring(#codeBlocks) .. " code blocks")
   return codeBlocks
 end
 
--- Handle a turtle command
 local function handleTurtleCommand(userInput)
-  -- Check for direct mining command pattern
   local width, height, depth = userInput:match("mine%s+a%s+(%d+)%s*x%s*(%d+)%s*x%s*(%d+)")
   if not width then
-    -- Try alternative phrasings
     width, height, depth = userInput:match("dig%s+a%s+(%d+)%s*x%s*(%d+)%s*x%s*(%d+)")
   end
-  
-  -- If we matched a direct mining command, handle it directly
+
   if width and height and depth then
     width, height, depth = tonumber(width), tonumber(height), tonumber(depth)
-    
+
     if checkSimpleMiningExists() then
       debugLog("Direct mining command detected: " .. width .. "x" .. height .. "x" .. depth)
-      
+
       print("Mining command detected. Running simple_mining.lua with dimensions:")
       print("Width: " .. width .. ", Height: " .. height .. ", Depth: " .. depth)
-      
+
       write("Execute mining operation? (y/n): ")
       local input = read()
-      
+
       if input:lower() == "y" then
         local success, err = runSimpleMining(width, height, depth)
         if not success then
@@ -443,30 +377,28 @@ local function handleTurtleCommand(userInput)
       else
         print("Mining operation cancelled.")
       end
-      
+
       return
     end
   end
-  
-  -- For non-direct mining commands, use the AI
+
   term.setTextColor(colors.cyan)
   print("Interpreting command...")
   term.setTextColor(colors.white)
-  
+
   debugLog("Sending command: " .. userInput)
   local response = generateContent(userInput)
-  
+
   if not response or type(response) ~= "string" then
     term.setTextColor(colors.red)
-    print("Error: Invalid response from Gemini AI")
+    print("Error: Invalid response from Groq AI")
     debugLog("Response type: " .. type(response))
     term.setTextColor(colors.white)
     return
   end
-  
-  -- Extract code blocks from the response
+
   local codeBlocks = extractCodeBlocks(response)
-  
+
   if #codeBlocks == 0 then
     term.setTextColor(colors.red)
     print("No executable code found in the response.")
@@ -475,25 +407,22 @@ local function handleTurtleCommand(userInput)
     term.setTextColor(colors.white)
     return
   end
-  
-  -- Display the full response
+
   term.setTextColor(colors.lightGray)
   print(response)
   term.setTextColor(colors.white)
-  
-  -- Add the code to the command queue
+
   debugLog("Adding " .. tostring(#codeBlocks) .. " blocks to queue")
-  turtleExecutionContext.commandQueue = {}  -- Clear previous queue
-  
+  turtleExecutionContext.commandQueue = {}
+
   for i, codeBlock in ipairs(codeBlocks) do
     debugLog("Adding block " .. i .. " to queue")
     table.insert(turtleExecutionContext.commandQueue, codeBlock)
   end
-  
-  -- Ask for confirmation before executing
+
   write("Execute this code? (y/n): ")
   local input = read()
-  
+
   if input:lower() == "y" then
     if not turtleExecutionContext.inProgress then
       processCommandQueue()
@@ -506,16 +435,14 @@ local function handleTurtleCommand(userInput)
   end
 end
 
--- Save API key
 local function saveApiKey()
   term.setTextColor(colors.cyan)
-  write("Enter your Gemini API key: ")
+  write("Enter your Groq API key (gsk_...): ")
   term.setTextColor(colors.white)
-  
-  -- Hide input while typing the API key
+
   local key = read("*")
   if key and key ~= "" then
-    settings.set("gemini.api_key", key)
+    settings.set("groq.api_key", key)
     settings.save()
     print("API key saved!")
   else
@@ -523,15 +450,14 @@ local function saveApiKey()
   end
 end
 
--- Show help information
 local function showHelp()
   term.setTextColor(colors.yellow)
-  print("=== Turtle Gemini Shell Help ===")
+  print("=== Turtle Groq Shell Help ===")
   term.setTextColor(colors.white)
   print("Type natural language commands to control your turtle.")
   print("For example: 'move forward 3 blocks and turn right'")
   print("")
-  
+
   if checkSimpleMiningExists() then
     print("Direct Mining Commands:")
     print("- mine a 5x5x5 area")
@@ -539,74 +465,57 @@ local function showHelp()
     print("These will use the simple_mining.lua program directly.")
     print("")
   end
-  
+
   print("Special commands:")
   print("- exit: Exit the program")
   print("- help: Show this help message")
   print("- clear: Clear conversation history")
-  print("- setkey: Set your Gemini API key")
-  print("- status: Show turtle status (fuel, position, etc.)")
+  print("- setkey: Set your Groq API key")
+  print("- status: Show turtle status (fuel, inventory, etc.)")
   print("- debug: Toggle debug mode")
-  print("")
-  print("Press Enter with no text to start a new command.")
 end
 
--- Show turtle status
 local function showTurtleStatus()
   term.setTextColor(colors.yellow)
   print("=== Turtle Status ===")
   term.setTextColor(colors.white)
-  
+
   local fuelLevel = turtle.getFuelLevel()
-  local fuelStr = fuelLevel
-  
-  if fuelLevel == "unlimited" then
-    fuelStr = "Unlimited"
-  else
-    fuelStr = tostring(fuelLevel)
-  end
-  
-  print("Fuel Level: " .. fuelStr)
-  
-  -- Try to get selected slot and item details
+  print("Fuel Level: " .. (fuelLevel == "unlimited" and "Unlimited" or tostring(fuelLevel)))
+
   local selectedSlot = turtle.getSelectedSlot()
   print("Selected Slot: " .. selectedSlot)
-  
+
   local itemDetail = turtle.getItemDetail()
   if itemDetail then
     print("Current Item: " .. itemDetail.name .. " (Count: " .. itemDetail.count .. ")")
   else
     print("Current Item: None")
   end
-  
+
   print("")
   print("Inventory Summary:")
-  
-  local totalItems = 0
-  local slotsUsed = 0
-  
+
+  local totalItems, slotsUsed = 0, 0
+
   for i = 1, 16 do
     local count = turtle.getItemCount(i)
     if count > 0 then
       slotsUsed = slotsUsed + 1
       totalItems = totalItems + count
-      
+
       local detail = turtle.getItemDetail(i)
       local name = detail and detail.name or "Unknown"
-      
-      if i == selectedSlot then
-        term.setTextColor(colors.yellow)
-      end
-      
+
+      if i == selectedSlot then term.setTextColor(colors.yellow) end
       print("  Slot " .. i .. ": " .. name .. " x" .. count)
       term.setTextColor(colors.white)
     end
   end
-  
+
   print("")
   print("Total: " .. totalItems .. " items in " .. slotsUsed .. " slots")
-  
-  -- Check for installed programs
+
   print("")
   print("Installed Special Programs:")
   if checkSimpleMiningExists() then
@@ -616,61 +525,48 @@ local function showTurtleStatus()
   end
 end
 
--- Toggle debug mode
 local function toggleDebug()
   DEBUG = not DEBUG
   print("Debug mode: " .. (DEBUG and "ON" or "OFF"))
 end
 
--- Main program
 local function main()
   term.clear()
   term.setCursorPos(1, 1)
-  
+
   term.setTextColor(colors.yellow)
-  print("=== Turtle Gemini Shell v" .. VERSION .. " ===")
+  print("=== Turtle Groq Shell v" .. VERSION .. " ===")
   term.setTextColor(colors.white)
+  print("Model: " .. MODEL)
   print("Control your turtle with natural language")
   print("Type 'help' for available commands")
   print("")
-  
-  -- Check for API key
-  local apiKey = settings.get("gemini.api_key")
+
+  local apiKey = settings.get("groq.api_key")
   if not apiKey or apiKey == "" then
-    -- Try to get from simple_mining settings
-    apiKey = settings.get("3dminer.gemini.api_key")
-    
-    if apiKey and apiKey ~= "" then
-      settings.set("gemini.api_key", apiKey)
-      settings.save()
-      print("Found and imported API key from 3dminer settings.")
-    else
-      print("API key not set! Type 'setkey' to set it.")
-      print("You can get an API key from Google AI Studio")
-    end
+    print("API key not set! Type 'setkey' to set it.")
+    print("Get a free key at console.groq.com")
   end
-  
-  -- Initialize the AI
+
   print("Initializing AI assistant...")
   local initMsg = initializeAI()
-  
+
   term.setTextColor(colors.lightGray)
   print(initMsg)
   term.setTextColor(colors.white)
   print("")
-  
-  -- Main command loop
+
   while true do
     if turtleExecutionContext.inProgress then
       print("Command execution in progress. Press Enter to start a new command.")
     end
-    
+
     term.setTextColor(colors.yellow)
     write("> ")
     term.setTextColor(colors.white)
-    
+
     local input = read()
-    
+
     if input:lower() == "exit" then
       break
     elseif input:lower() == "help" then
@@ -691,14 +587,13 @@ local function main()
     elseif trim(input) ~= "" then
       handleTurtleCommand(input)
     end
-    
+
     print("")
   end
-  
-  print("Exiting Turtle Gemini Shell. Goodbye!")
+
+  print("Exiting Turtle Groq Shell. Goodbye!")
 end
 
--- Run the program with error handling
 local function runWithErrorHandling()
   local success, err = pcall(main)
   if not success then
@@ -711,5 +606,4 @@ local function runWithErrorHandling()
   end
 end
 
--- Start the program with error handling
 runWithErrorHandling()
