@@ -2,13 +2,13 @@
 
 -- ========== CONFIGURATION PARAMETERS ==========
 -- Replace with your repository details
-local owner = "gotoundo"
+local owner = "Pazko77"
 local repo = "TurtleAI"
 local branch = "main" -- or "master" or another branch name
 
 -- Files to download (at root level of the repository)
 local filesToDownload = {
-  "gemini_chat.lua",
+  "groq_chat.lua",
   "turtle_ai_client.lua",
   -- Add more individual files as needed
 }
